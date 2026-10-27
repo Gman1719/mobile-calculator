@@ -76,6 +76,7 @@ export const BloodBankDashboard: React.FC = () => {
   const [issueHospitalId, setIssueHospitalId] = useState<string>('');
   const [issueReason, setIssueReason] = useState<string>('Emergency Trauma & Surgical Transfusion');
   const [isSubmittingIssue, setIsSubmittingIssue] = useState(false);
+  const [selectedRequestForIssue, setSelectedRequestForIssue] = useState<BloodRequest | null>(null);
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -84,13 +85,14 @@ export const BloodBankDashboard: React.FC = () => {
         api.getInventory(activeOrg?.id),
         api.getBatches(activeOrg?.id),
         api.getTransactions(activeOrg?.id),
-        api.getRequests({ status: 'OPEN' }),
+        api.getRequests(),
         api.getAllOrganizations().catch(() => []),
       ]);
       setInventory(invList);
       setBatches(batchList);
       setTransactions(txList);
-      setHospitalRequests(reqList);
+      const activePending = reqList.filter((r) => r.status !== 'FULFILLED' && r.status !== 'CANCELLED');
+      setHospitalRequests(activePending);
       setOrganizations(orgList.filter((o) => o.type === 'HOSPITAL'));
     } catch (err) {
       console.error('Error fetching blood bank dashboard data:', err);
@@ -143,6 +145,13 @@ export const BloodBankDashboard: React.FC = () => {
         recipientHospitalId: issueHospitalId || undefined,
         reason: issueReason,
       });
+
+      // Update associated blood request status if linked
+      if (selectedRequestForIssue) {
+        await api.updateRequestStatus(selectedRequestForIssue.id, 'FULFILLED');
+        setSelectedRequestForIssue(null);
+      }
+
       setIsIssueModalOpen(false);
       await fetchData();
     } catch (err: any) {
@@ -153,6 +162,7 @@ export const BloodBankDashboard: React.FC = () => {
   };
 
   const openIssueModalForRequest = (req: BloodRequest) => {
+    setSelectedRequestForIssue(req);
     setIssueBg(req.bloodGroup);
     setIssueUnits(req.unitsRequired);
     setIssueHospitalId(req.hospitalId || '');
