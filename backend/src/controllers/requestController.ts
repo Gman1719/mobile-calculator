@@ -40,6 +40,20 @@ export class RequestController {
     }
   }
 
+  static async getMyRequests(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.userId as string;
+      const results = await RequestService.getRequestsByUser(userId);
+
+      return res.status(200).json({
+        success: true,
+        data: results,
+      });
+    } catch (error: any) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+  }
+
   static async respondToRequest(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const donorId = req.user!.userId as string;

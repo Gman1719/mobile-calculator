@@ -9,6 +9,7 @@ router.use(authenticateJWT);
 
 router.post('/', authorizeRoles('REQUESTER', 'HOSPITAL_STAFF'), RequestController.createRequest);
 router.get('/', RequestController.listRequests);
+router.get('/my-requests', RequestController.getMyRequests);
 router.post('/:id/respond', authorizeRoles('DONOR'), RequestController.respondToRequest);
 router.patch('/:id/status', RequestController.updateStatus);
 

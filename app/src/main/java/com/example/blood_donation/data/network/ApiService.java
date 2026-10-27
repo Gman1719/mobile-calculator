@@ -46,6 +46,15 @@ public interface ApiService {
             @Body ResponsePayload responsePayload
     );
 
+    @retrofit2.http.PATCH("donors/availability")
+    Call<ApiResponse<Object>> updateAvailability(@Body AvailabilityPayload payload);
+
+    @retrofit2.http.PATCH("requests/{id}/status")
+    Call<ApiResponse<BloodRequestModel>> updateRequestStatus(
+            @Path("id") String requestId,
+            @Body StatusPayload statusPayload
+    );
+
     class ResponsePayload {
         private String responseStatus;
         private String notes;
@@ -61,6 +70,30 @@ public interface ApiService {
 
         public String getNotes() {
             return notes;
+        }
+    }
+
+    class AvailabilityPayload {
+        private boolean isAvailable;
+
+        public AvailabilityPayload(boolean isAvailable) {
+            this.isAvailable = isAvailable;
+        }
+
+        public boolean isAvailable() {
+            return isAvailable;
+        }
+    }
+
+    class StatusPayload {
+        private String status;
+
+        public StatusPayload(String status) {
+            this.status = status;
+        }
+
+        public String getStatus() {
+            return status;
         }
     }
 }

@@ -8,24 +8,34 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.cardview.widget.CardView;
 
 import com.example.blood_donation.R;
+import com.example.blood_donation.data.model.ApiResponse;
+import com.example.blood_donation.data.model.BloodRequestModel;
+import com.example.blood_donation.data.network.ApiService;
+import com.example.blood_donation.data.network.RetrofitClient;
 import com.example.blood_donation.ui.auth.WelcomeActivity;
 import com.example.blood_donation.utils.SessionManager;
 
 import java.util.ArrayList;
 import java.util.List;
 
+import retrofit2.Call;
+import retrofit2.Callback;
+import retrofit2.Response;
+
 public class DonorDashboardActivity extends AppCompatActivity {
 
     private SessionManager sessionManager;
     private boolean isAvailable = true;
-    private String currentCity = "New York";
+    private String currentCity = "Metropolis";
+    private String donorBloodGroup = "O+";
 
-    // Donor responses kept strictly separate from confirmed donation records
+    private final List<BloodRequestModel> liveInvitations = new ArrayList<>();
     private final List<String> donorResponseLog = new ArrayList<>();
 
     @Override
@@ -59,13 +69,45 @@ public class DonorDashboardActivity extends AppCompatActivity {
             startActivity(intent);
             finish();
         });
+
+        // Pre-fetch live relevant requests for this donor
+        fetchLiveInvitations();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        fetchLiveInvitations();
     }
 
     private void updateStatusText(TextView tvDonorStatus) {
         if (tvDonorStatus != null) {
             String statusStr = isAvailable ? "Active Donor" : "Currently Unavailable";
-            tvDonorStatus.setText("Blood Group: O+ | " + statusStr + " (" + currentCity + ")");
+            tvDonorStatus.setText("Blood Group: " + donorBloodGroup + " | " + statusStr + " (" + currentCity + ")");
         }
+    }
+
+    private void fetchLiveInvitations() {
+        RetrofitClient.getApiService(this)
+                .getRequests(donorBloodGroup, currentCity, null)
+                .enqueue(new Callback<ApiResponse<List<BloodRequestModel>>>() {
+                    @Override
+                    public void onResponse(@NonNull Call<ApiResponse<List<BloodRequestModel>>> call,
+                                           @NonNull Response<ApiResponse<List<BloodRequestModel>>> response) {
+                        if (response.isSuccessful() && response.body() != null && response.body().isSuccess()) {
+                            liveInvitations.clear();
+                            List<BloodRequestModel> list = response.body().getData();
+                            if (list != null) {
+                                liveInvitations.addAll(list);
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onFailure(@NonNull Call<ApiResponse<List<BloodRequestModel>>> call, @NonNull Throwable t) {
+                        // Keep any cached invitations
+                    }
+                });
     }
 
     private void showUpdateAvailabilityDialog(TextView tvDonorStatus) {
@@ -83,18 +125,37 @@ public class DonorDashboardActivity extends AppCompatActivity {
 
         builder.setView(layout);
         builder.setPositiveButton(isAvailable ? "Set Unavailable" : "Set Available", (dialog, which) -> {
-            isAvailable = !isAvailable;
+            boolean targetAvailability = !isAvailable;
             if (etCity.getText() != null && !etCity.getText().toString().trim().isEmpty()) {
                 currentCity = etCity.getText().toString().trim();
             }
-            updateStatusText(tvDonorStatus);
-            String statusMessage = isAvailable ? "You are now marked AVAILABLE in " + currentCity : "You are marked UNAVAILABLE";
-            Toast.makeText(this, statusMessage, Toast.LENGTH_SHORT).show();
+
+            // Sync availability with backend
+            RetrofitClient.getApiService(DonorDashboardActivity.this)
+                    .updateAvailability(new ApiService.AvailabilityPayload(targetAvailability))
+                    .enqueue(new Callback<ApiResponse<Object>>() {
+                        @Override
+                        public void onResponse(@NonNull Call<ApiResponse<Object>> call, @NonNull Response<ApiResponse<Object>> response) {
+                            isAvailable = targetAvailability;
+                            updateStatusText(tvDonorStatus);
+                            String statusMessage = isAvailable ? "Marked AVAILABLE in " + currentCity : "Marked UNAVAILABLE";
+                            Toast.makeText(DonorDashboardActivity.this, statusMessage, Toast.LENGTH_SHORT).show();
+                        }
+
+                        @Override
+                        public void onFailure(@NonNull Call<ApiResponse<Object>> call, @NonNull Throwable t) {
+                            isAvailable = targetAvailability;
+                            updateStatusText(tvDonorStatus);
+                            Toast.makeText(DonorDashboardActivity.this, "Availability updated locally (offline mode).", Toast.LENGTH_SHORT).show();
+                        }
+                    });
         });
+
         builder.setNeutralButton("Save City Only", (dialog, which) -> {
             if (etCity.getText() != null && !etCity.getText().toString().trim().isEmpty()) {
                 currentCity = etCity.getText().toString().trim();
                 updateStatusText(tvDonorStatus);
+                fetchLiveInvitations();
                 Toast.makeText(this, "Location updated to " + currentCity, Toast.LENGTH_SHORT).show();
             }
         });
@@ -104,29 +165,74 @@ public class DonorDashboardActivity extends AppCompatActivity {
 
     private void showInvitationsDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Blood Request Invitations");
-        String[] invitations = new String[]{
-                "URGENT: O+ Required at City General Hospital (2 Units)",
-                "HIGH: O+ Needed at St. Jude Medical Center (1 Unit)",
-                "ROUTINE: O+ Needed at Mercy Community Hospital (1 Unit)"
-        };
+        builder.setTitle("Live Blood Donation Requests");
+
+        if (liveInvitations.isEmpty()) {
+            builder.setMessage("No emergency requests currently active for " + donorBloodGroup + " in " + currentCity + ".\n\nThank you for standing ready to save lives!");
+            builder.setPositiveButton("Check Again", (d, w) -> fetchLiveInvitations());
+            builder.setNegativeButton("Close", null);
+            builder.show();
+            return;
+        }
+
+        String[] invitations = new String[liveInvitations.size()];
+        for (int i = 0; i < liveInvitations.size(); i++) {
+            BloodRequestModel req = liveInvitations.get(i);
+            invitations[i] = "[" + req.getUrgency() + "] " + req.getBloodGroup() + " (" + req.getUnitsRequired() + " Units)\n" +
+                             "Facility: " + req.getHospitalName() + " (" + req.getCity() + ")\n" +
+                             "Status: " + req.getStatus();
+        }
 
         builder.setItems(invitations, (dialog, which) -> {
+            BloodRequestModel selectedReq = liveInvitations.get(which);
             AlertDialog.Builder actionBuilder = new AlertDialog.Builder(this);
-            actionBuilder.setTitle("Respond to Request");
-            actionBuilder.setMessage("Do you accept the donation invitation for:\n" + invitations[which] + "?\n\nNote: Responding 'Accept' registers your availability. Final medical eligibility is assessed at collection.");
-            actionBuilder.setPositiveButton("Accept & Respond", (d, w) -> {
-                donorResponseLog.add("ACCEPTED: " + invitations[which]);
-                Toast.makeText(this, "Response registered as ACCEPTED. Requester notified!", Toast.LENGTH_LONG).show();
+            actionBuilder.setTitle("Respond to Donation Request");
+            actionBuilder.setMessage("Facility: " + selectedReq.getHospitalName() + "\n" +
+                                     "Required: " + selectedReq.getUnitsRequired() + " unit(s) of " + selectedReq.getBloodGroup() + "\n" +
+                                     "Urgency: " + selectedReq.getUrgency() + "\n\n" +
+                                     "⚠️ Clinical Safety Notice:\n" +
+                                     "Accepting indicates your willingness to be contacted for donation. Medical eligibility, screening, collection, and safety testing will be conducted by authorized healthcare staff.");
+
+            actionBuilder.setPositiveButton("Accept & Express Willingness", (d, w) -> {
+                recordDonorResponse(selectedReq, "ACCEPTED");
             });
+
             actionBuilder.setNegativeButton("Decline", (d, w) -> {
-                donorResponseLog.add("DECLINED: " + invitations[which]);
-                Toast.makeText(this, "Response registered as DECLINED.", Toast.LENGTH_SHORT).show();
+                recordDonorResponse(selectedReq, "DECLINED");
             });
+
             actionBuilder.show();
         });
         builder.setNegativeButton("Close", null);
         builder.show();
+    }
+
+    private void recordDonorResponse(BloodRequestModel req, String responseStatus) {
+        if (req.getId() != null) {
+            ApiService.ResponsePayload payload = new ApiService.ResponsePayload(
+                    responseStatus,
+                    "Donor " + sessionManager.getUserName() + " responded " + responseStatus + " from mobile app."
+            );
+
+            RetrofitClient.getApiService(DonorDashboardActivity.this)
+                    .respondToRequest(req.getId(), payload)
+                    .enqueue(new Callback<ApiResponse<Object>>() {
+                        @Override
+                        public void onResponse(@NonNull Call<ApiResponse<Object>> call, @NonNull Response<ApiResponse<Object>> response) {
+                            donorResponseLog.add(responseStatus + ": " + req.getHospitalName() + " (" + req.getBloodGroup() + ")");
+                            String msg = "ACCEPTED".equals(responseStatus)
+                                    ? "Response registered! Hospital staff will coordinate screening."
+                                    : "Declined response registered.";
+                            Toast.makeText(DonorDashboardActivity.this, msg, Toast.LENGTH_LONG).show();
+                        }
+
+                        @Override
+                        public void onFailure(@NonNull Call<ApiResponse<Object>> call, @NonNull Throwable t) {
+                            donorResponseLog.add(responseStatus + " (Offline): " + req.getHospitalName());
+                            Toast.makeText(DonorDashboardActivity.this, "Response noted locally.", Toast.LENGTH_SHORT).show();
+                        }
+                    });
+        }
     }
 
     private void showEligibilityDialog() {
@@ -148,18 +254,20 @@ public class DonorDashboardActivity extends AppCompatActivity {
         builder.setTitle("Donation Records & Responses");
 
         StringBuilder historyBuilder = new StringBuilder();
-        historyBuilder.append("=== VERIFIED DONATION RECORDS ===\n")
-                      .append("1. City General Hospital - 1 Unit O+ (Jan 15, 2025)\n")
-                      .append("2. Red Cross Center - 1 Unit O+ (Sep 10, 2024)\n\n")
-                      .append("=== RECENT RESPONSES ===\n");
+        historyBuilder.append("=== RECENT DONOR RESPONSES ===\n");
 
         if (donorResponseLog.isEmpty()) {
-            historyBuilder.append("No active responses logged in this session.");
+            historyBuilder.append("No response records logged in this session.\n\n");
         } else {
             for (String resp : donorResponseLog) {
                 historyBuilder.append("• ").append(resp).append("\n");
             }
+            historyBuilder.append("\n");
         }
+
+        historyBuilder.append("=== VERIFIED CLINICAL RECORDS ===\n")
+                      .append("1. Metropolis Central Hospital - 1 Unit O+ (Verified)\n")
+                      .append("Note: Verified records appear only after clinical screening and blood collection are completed.");
 
         builder.setMessage(historyBuilder.toString());
         builder.setPositiveButton("OK", null);
