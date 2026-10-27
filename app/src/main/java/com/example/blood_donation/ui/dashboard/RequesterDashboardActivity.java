@@ -2,6 +2,8 @@ package com.example.blood_donation.ui.dashboard;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -13,7 +15,6 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.cardview.widget.CardView;
 
 import com.example.blood_donation.R;
 import com.example.blood_donation.data.model.ApiResponse;
@@ -36,7 +37,10 @@ public class RequesterDashboardActivity extends AppCompatActivity {
 
     private SessionManager sessionManager;
     private final List<BloodRequestModel> activeRequestsList = new ArrayList<>();
-    private TextView tvStatusSummary;
+
+    private TextView tvWelcomeUser, tvActiveCount, tvRefreshRequests;
+    private Button btnCreateRequest, btnSearchDonors, btnLogout;
+    private LinearLayout layoutEmptyRequests, containerRequestsList;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -45,17 +49,23 @@ public class RequesterDashboardActivity extends AppCompatActivity {
 
         sessionManager = new SessionManager(this);
 
-        TextView tvWelcomeUser = findViewById(R.id.tvWelcomeUser);
-        tvWelcomeUser.setText("Welcome, " + sessionManager.getUserName());
+        tvWelcomeUser = findViewById(R.id.tvWelcomeUser);
+        tvActiveCount = findViewById(R.id.tvActiveCount);
+        tvRefreshRequests = findViewById(R.id.tvRefreshRequests);
+        btnCreateRequest = findViewById(R.id.btnCreateRequest);
+        btnSearchDonors = findViewById(R.id.btnSearchDonors);
+        btnLogout = findViewById(R.id.btnLogout);
+        layoutEmptyRequests = findViewById(R.id.layoutEmptyRequests);
+        containerRequestsList = findViewById(R.id.containerRequestsList);
 
-        CardView cardCreateRequest = findViewById(R.id.cardCreateRequest);
-        CardView cardTrackRequests = findViewById(R.id.cardTrackRequests);
-        CardView cardSearchDonors = findViewById(R.id.cardSearchDonors);
-        Button btnLogout = findViewById(R.id.btnLogout);
+        tvWelcomeUser.setText("Welcome, " + sessionManager.getUserName() + "!");
 
-        cardCreateRequest.setOnClickListener(v -> showCreateRequestDialog());
-        cardTrackRequests.setOnClickListener(v -> showTrackRequestsDialog());
-        cardSearchDonors.setOnClickListener(v -> showSearchDonorsDialog());
+        btnCreateRequest.setOnClickListener(v -> showCreateRequestDialog());
+        btnSearchDonors.setOnClickListener(v -> showSearchDonorsDialog());
+        tvRefreshRequests.setOnClickListener(v -> {
+            Toast.makeText(this, "Refreshing requisitions...", Toast.LENGTH_SHORT).show();
+            loadRequestsFromBackend();
+        });
 
         btnLogout.setOnClickListener(v -> {
             sessionManager.logout();
@@ -65,7 +75,6 @@ public class RequesterDashboardActivity extends AppCompatActivity {
             finish();
         });
 
-        // Fetch live blood requests for this requester
         loadRequestsFromBackend();
     }
 
@@ -86,26 +95,107 @@ public class RequesterDashboardActivity extends AppCompatActivity {
                     if (serverList != null && !serverList.isEmpty()) {
                         activeRequestsList.addAll(serverList);
                     }
+                    renderRequestsList();
+                } else {
+                    renderRequestsList();
                 }
             }
 
             @Override
             public void onFailure(@NonNull Call<ApiResponse<List<BloodRequestModel>>> call, @NonNull Throwable t) {
-                // If network is offline, keep existing list without crashing
+                renderRequestsList();
             }
         });
     }
 
+    private void renderRequestsList() {
+        containerRequestsList.removeAllViews();
+        int activeCount = 0;
+
+        for (BloodRequestModel req : activeRequestsList) {
+            if (!BloodRequestModel.STATUS_CANCELLED.equals(req.getStatus()) &&
+                !BloodRequestModel.STATUS_FULFILLED.equals(req.getStatus())) {
+                activeCount++;
+            }
+        }
+        tvActiveCount.setText(String.valueOf(activeCount));
+
+        if (activeRequestsList.isEmpty()) {
+            layoutEmptyRequests.setVisibility(View.VISIBLE);
+            return;
+        }
+
+        layoutEmptyRequests.setVisibility(View.GONE);
+        LayoutInflater inflater = LayoutInflater.from(this);
+
+        for (BloodRequestModel req : activeRequestsList) {
+            View cardView = inflater.inflate(R.layout.item_blood_request, containerRequestsList, false);
+
+            TextView tvCardBloodGroup = cardView.findViewById(R.id.tvCardBloodGroup);
+            TextView tvCardUnits = cardView.findViewById(R.id.tvCardUnits);
+            TextView tvCardUrgency = cardView.findViewById(R.id.tvCardUrgency);
+            TextView tvCardHospital = cardView.findViewById(R.id.tvCardHospital);
+            TextView tvCardPatient = cardView.findViewById(R.id.tvCardPatient);
+            TextView tvCardStatusMessage = cardView.findViewById(R.id.tvCardStatusMessage);
+            Button btnCancelRequest = cardView.findViewById(R.id.btnCancelRequest);
+
+            tvCardBloodGroup.setText(req.getBloodGroup() != null ? req.getBloodGroup() : "O+");
+            tvCardUnits.setText("(" + req.getUnitsRequired() + " Units)");
+            tvCardUrgency.setText(req.getUrgency() != null ? req.getUrgency() : "HIGH");
+            tvCardHospital.setText(req.getHospitalName() != null ? req.getHospitalName() : "Metropolis Central Hospital");
+
+            String patientInfo = "Contact: " + (req.getContactName() != null ? req.getContactName() : "Requester") +
+                                 " • " + (req.getContactPhone() != null ? req.getContactPhone() : "+1 555-0199");
+            tvCardPatient.setText(patientInfo);
+
+            String statusMsg = req.getStatusDisplayMessage();
+            tvCardStatusMessage.setText(statusMsg);
+
+            if (BloodRequestModel.STATUS_CANCELLED.equals(req.getStatus()) ||
+                BloodRequestModel.STATUS_FULFILLED.equals(req.getStatus())) {
+                btnCancelRequest.setVisibility(View.GONE);
+            } else {
+                btnCancelRequest.setVisibility(View.VISIBLE);
+                btnCancelRequest.setOnClickListener(v -> cancelRequest(req));
+            }
+
+            containerRequestsList.addView(cardView);
+        }
+    }
+
+    private void cancelRequest(BloodRequestModel req) {
+        if (req.getId() != null) {
+            RetrofitClient.getApiService(this)
+                    .updateRequestStatus(req.getId(), new ApiService.StatusPayload(BloodRequestModel.STATUS_CANCELLED))
+                    .enqueue(new Callback<ApiResponse<BloodRequestModel>>() {
+                        @Override
+                        public void onResponse(@NonNull Call<ApiResponse<BloodRequestModel>> call,
+                                               @NonNull Response<ApiResponse<BloodRequestModel>> response) {
+                            req.setStatus(BloodRequestModel.STATUS_CANCELLED);
+                            Toast.makeText(RequesterDashboardActivity.this, "Request marked as CANCELLED", Toast.LENGTH_SHORT).show();
+                            renderRequestsList();
+                        }
+
+                        @Override
+                        public void onFailure(@NonNull Call<ApiResponse<BloodRequestModel>> call, @NonNull Throwable t) {
+                            req.setStatus(BloodRequestModel.STATUS_CANCELLED);
+                            Toast.makeText(RequesterDashboardActivity.this, "Request marked as CANCELLED (local)", Toast.LENGTH_SHORT).show();
+                            renderRequestsList();
+                        }
+                    });
+        }
+    }
+
     private void showCreateRequestDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Create Emergency Blood Request");
+        builder.setTitle("Create Emergency Blood Requisition");
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(40, 20, 40, 10);
 
         final EditText etPatientName = new EditText(this);
-        etPatientName.setHint("Patient Full Name");
+        etPatientName.setHint("Patient Full Name (e.g., Alex Johnson)");
         layout.addView(etPatientName);
 
         final Spinner spinnerBloodGroup = new Spinner(this);
@@ -120,7 +210,7 @@ public class RequesterDashboardActivity extends AppCompatActivity {
         layout.addView(etUnits);
 
         final EditText etHospital = new EditText(this);
-        etHospital.setHint("Hospital Name");
+        etHospital.setHint("Hospital / Facility Name");
         layout.addView(etHospital);
 
         final Spinner spinnerUrgency = new Spinner(this);
@@ -130,7 +220,7 @@ public class RequesterDashboardActivity extends AppCompatActivity {
         layout.addView(spinnerUrgency);
 
         builder.setView(layout);
-        builder.setPositiveButton("Submit Request", (dialog, which) -> {
+        builder.setPositiveButton("Submit Emergency Request", (dialog, which) -> {
             String rawPatient = etPatientName.getText() != null ? etPatientName.getText().toString().trim() : "";
             String patient = rawPatient.isEmpty() ? "Emergency Patient" : rawPatient;
             String bg = spinnerBloodGroup.getSelectedItem().toString();
@@ -140,7 +230,6 @@ public class RequesterDashboardActivity extends AppCompatActivity {
                     ? etHospital.getText().toString().trim() : "Metropolis Central Hospital";
             String urgency = spinnerUrgency.getSelectedItem().toString();
 
-            // Prepare payload with SEARCHING_FOR_BLOOD as initial workflow status
             BloodRequestModel newRequest = new BloodRequestModel();
             newRequest.setBloodGroup(bg);
             newRequest.setUnitsRequired(units);
@@ -151,9 +240,8 @@ public class RequesterDashboardActivity extends AppCompatActivity {
             newRequest.setTown("Central");
             newRequest.setContactName(patient);
             newRequest.setContactPhone("+1 555-0199");
-            newRequest.setNotes("Requester urgent submission");
+            newRequest.setNotes("Emergency patient requirement broadcast");
 
-            // Transmit to live backend REST API
             RetrofitClient.getApiService(RequesterDashboardActivity.this)
                     .createRequest(newRequest)
                     .enqueue(new Callback<ApiResponse<BloodRequestModel>>() {
@@ -162,27 +250,22 @@ public class RequesterDashboardActivity extends AppCompatActivity {
                                                @NonNull Response<ApiResponse<BloodRequestModel>> response) {
                             if (response.isSuccessful() && response.body() != null && response.body().isSuccess()) {
                                 BloodRequestModel created = response.body().getData();
-                                if (created != null) {
-                                    activeRequestsList.add(0, created);
-                                } else {
-                                    activeRequestsList.add(0, newRequest);
-                                }
-                                String reqId = created != null && created.getId() != null ? created.getId().substring(0, Math.min(8, created.getId().length())) : "NEW";
-                                String title = "Request Created (" + reqId + ")";
-                                String msg = units + " unit(s) of " + bg + " (" + urgency + "). Status: SEARCHING_FOR_BLOOD.";
-
-                                NotificationHelper.showNotification(RequesterDashboardActivity.this, title, msg);
-                                Toast.makeText(RequesterDashboardActivity.this, "Request Transmitted! Status: SEARCHING_FOR_BLOOD", Toast.LENGTH_LONG).show();
+                                activeRequestsList.add(0, created != null ? created : newRequest);
                             } else {
                                 activeRequestsList.add(0, newRequest);
-                                Toast.makeText(RequesterDashboardActivity.this, "Request queued locally (offline fallback).", Toast.LENGTH_SHORT).show();
                             }
+                            renderRequestsList();
+                            String title = "Blood Request Broadcast";
+                            String msg = units + " unit(s) of " + bg + " (" + urgency + "). Sourcing active!";
+                            NotificationHelper.showNotification(RequesterDashboardActivity.this, title, msg);
+                            Toast.makeText(RequesterDashboardActivity.this, "Requisition Live! Status: SEARCHING_FOR_BLOOD", Toast.LENGTH_LONG).show();
                         }
 
                         @Override
                         public void onFailure(@NonNull Call<ApiResponse<BloodRequestModel>> call, @NonNull Throwable t) {
                             activeRequestsList.add(0, newRequest);
-                            Toast.makeText(RequesterDashboardActivity.this, "Network unavailable, cached locally.", Toast.LENGTH_SHORT).show();
+                            renderRequestsList();
+                            Toast.makeText(RequesterDashboardActivity.this, "Request cached locally (offline).", Toast.LENGTH_SHORT).show();
                         }
                     });
         });
@@ -190,76 +273,9 @@ public class RequesterDashboardActivity extends AppCompatActivity {
         builder.show();
     }
 
-    private void showTrackRequestsDialog() {
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("My Requests & Live Tracking");
-
-        if (activeRequestsList.isEmpty()) {
-            builder.setMessage("No active blood requests submitted yet.\n\nTap 'Create Emergency Request' to submit a new requirement.");
-            builder.setPositiveButton("OK", null);
-            builder.show();
-            return;
-        }
-
-        String[] reqDisplayList = new String[activeRequestsList.size()];
-        int idx = 0;
-        for (BloodRequestModel req : activeRequestsList) {
-            String shortId = req.getId() != null && req.getId().length() > 8 ? req.getId().substring(0, 8) : req.getId();
-            reqDisplayList[idx++] = shortId + " | " + req.getBloodGroup() + " (" + req.getUnitsRequired() + " Units)\n" +
-                                    "Status: " + req.getStatus() + "\n" +
-                                    "Hospital: " + req.getHospitalName();
-        }
-
-        builder.setItems(reqDisplayList, (dialog, which) -> {
-            BloodRequestModel selectedReq = activeRequestsList.get(which);
-            AlertDialog.Builder detailBuilder = new AlertDialog.Builder(this);
-            detailBuilder.setTitle("Request Details: " + (selectedReq.getId() != null ? selectedReq.getId() : "PENDING"));
-
-            String detailMsg = "Blood Group: " + selectedReq.getBloodGroup() + "\n" +
-                               "Units Needed: " + selectedReq.getUnitsRequired() + "\n" +
-                               "Hospital: " + selectedReq.getHospitalName() + "\n" +
-                               "Urgency: " + selectedReq.getUrgency() + "\n" +
-                               "Live Status: " + selectedReq.getStatus() + "\n" +
-                               "Status Message: " + selectedReq.getStatusDisplayMessage() + "\n\n" +
-                               "• Sourcing Strategy: Parallel search across participating blood banks and registered donors.\n" +
-                               "• Note: Transfusion suitability and clinical cross-matching must be verified by hospital staff.";
-
-            detailBuilder.setMessage(detailMsg);
-            detailBuilder.setPositiveButton("Keep Active", (d, w) ->
-                    Toast.makeText(this, "Request remains ACTIVE in " + selectedReq.getStatus() + " status.", Toast.LENGTH_SHORT).show());
-
-            detailBuilder.setNegativeButton("Cancel Request", (d, w) -> {
-                if (selectedReq.getId() != null) {
-                    RetrofitClient.getApiService(RequesterDashboardActivity.this)
-                            .updateRequestStatus(selectedReq.getId(), new ApiService.StatusPayload(BloodRequestModel.STATUS_CANCELLED))
-                            .enqueue(new Callback<ApiResponse<BloodRequestModel>>() {
-                                @Override
-                                public void onResponse(@NonNull Call<ApiResponse<BloodRequestModel>> call,
-                                                       @NonNull Response<ApiResponse<BloodRequestModel>> response) {
-                                    selectedReq.setStatus(BloodRequestModel.STATUS_CANCELLED);
-                                    Toast.makeText(RequesterDashboardActivity.this, "Request marked as CANCELLED.", Toast.LENGTH_SHORT).show();
-                                }
-
-                                @Override
-                                public void onFailure(@NonNull Call<ApiResponse<BloodRequestModel>> call, @NonNull Throwable t) {
-                                    selectedReq.setStatus(BloodRequestModel.STATUS_CANCELLED);
-                                    Toast.makeText(RequesterDashboardActivity.this, "Request cancelled locally.", Toast.LENGTH_SHORT).show();
-                                }
-                            });
-                } else {
-                    selectedReq.setStatus(BloodRequestModel.STATUS_CANCELLED);
-                    Toast.makeText(this, "Request cancelled.", Toast.LENGTH_SHORT).show();
-                }
-            });
-            detailBuilder.show();
-        });
-        builder.setNegativeButton("Close", null);
-        builder.show();
-    }
-
     private void showSearchDonorsDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Search Active Donors");
+        builder.setTitle("Search Available Blood Donors");
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
@@ -277,7 +293,7 @@ public class RequesterDashboardActivity extends AppCompatActivity {
         layout.addView(etCity);
 
         builder.setView(layout);
-        builder.setPositiveButton("Search", (dialog, which) -> {
+        builder.setPositiveButton("Search Donors", (dialog, which) -> {
             String bg = spinnerBloodGroup.getSelectedItem().toString();
             String rawCity = etCity.getText() != null ? etCity.getText().toString().trim() : "";
             String city = rawCity.isEmpty() ? "Metropolis" : rawCity;
@@ -291,7 +307,8 @@ public class RequesterDashboardActivity extends AppCompatActivity {
                             List<String> resultsList = new ArrayList<>();
                             if (response.isSuccessful() && response.body() != null && response.body().getData() != null) {
                                 for (DonorModel donor : response.body().getData()) {
-                                    resultsList.add(donor.getFullName() + " (" + donor.getBloodGroup() + ") - " + donor.getCity() + "\nPhone: " + donor.getPhone());
+                                    resultsList.add(donor.getFullName() + " (" + donor.getBloodGroup() + ")\n" +
+                                            "Location: " + donor.getCity() + " • Phone: " + donor.getPhone());
                                 }
                             }
 
@@ -301,10 +318,10 @@ public class RequesterDashboardActivity extends AppCompatActivity {
 
                             String[] displayArr = resultsList.toArray(new String[0]);
                             AlertDialog.Builder resultBuilder = new AlertDialog.Builder(RequesterDashboardActivity.this);
-                            resultBuilder.setTitle("Matching Donors (" + bg + " - " + city + ")");
+                            resultBuilder.setTitle("Active Donors (" + bg + " - " + city + ")");
                             resultBuilder.setItems(displayArr, (d, w) -> {
                                 if (w < resultsList.size() && !resultsList.get(0).startsWith("No registered")) {
-                                    Toast.makeText(RequesterDashboardActivity.this, "Contacting donor...", Toast.LENGTH_SHORT).show();
+                                    Toast.makeText(RequesterDashboardActivity.this, "Initiating contact with donor...", Toast.LENGTH_SHORT).show();
                                 }
                             });
                             resultBuilder.setNegativeButton("Close", null);
