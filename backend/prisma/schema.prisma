@@ -1,0 +1,316 @@
+// Prisma Schema for Blood Donor Finder & Blood Bank Management System (SQLite Dev Engine)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// ------------------------------------------------------
+// User & Authentication Models
+// ------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  phone        String
+  passwordHash String
+  fullName     String
+  status       String   @default("ACTIVE") // ACTIVE, SUSPENDED, PENDING_VERIFICATION
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relationships
+  userRoles             UserRole[]
+  donorProfile          DonorProfile?
+  hospitalProfile       HospitalProfile?
+  bloodBankProfile      BloodBankProfile?
+  createdRequests       BloodRequest[]         @relation("RequesterUser")
+  donorResponses        DonorResponse[]        @relation("DonorUser")
+  performedTransactions InventoryTransaction[] @relation("PerformedByUser")
+  donationRecords       DonationRecord[]       @relation("DonorUserDonations")
+  notifications         Notification[]
+  reportsSubmitted      Report[]               @relation("ReporterUser")
+  auditLogs             AuditLog[]
+  refreshTokens         RefreshToken[]
+
+  @@map("users")
+}
+
+model Role {
+  id        String     @id @default(uuid())
+  name      String     @unique // DONOR, REQUESTER, HOSPITAL_STAFF, BLOOD_BANK_OFFICER, SYSTEM_ADMINISTRATOR
+  userRoles UserRole[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+// ------------------------------------------------------
+// Profiles & Organizations
+// ------------------------------------------------------
+
+model DonorProfile {
+  id                 String    @id @default(uuid())
+  userId             String    @unique
+  bloodGroup         String    // A_POSITIVE, A_NEGATIVE, etc.
+  town               String
+  city               String
+  isAvailable        Boolean   @default(true)
+  allowNotifications Boolean   @default(true)
+  lastDonationDate   DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([bloodGroup, city, town, isAvailable])
+  @@map("donor_profiles")
+}
+
+model Organization {
+  id         String    @id @default(uuid())
+  name       String
+  type       String    // HOSPITAL, BLOOD_BANK
+  address    String
+  town       String
+  city       String
+  phone      String
+  email      String
+  isVerified Boolean   @default(false)
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  // Relationships
+  hospitalProfiles      HospitalProfile[]
+  bloodBankProfiles     BloodBankProfile[]
+  bloodRequests         BloodRequest[]         @relation("HospitalRequests")
+  inventories           BloodInventory[]
+  batches               InventoryBatch[]
+  inventoryTransactions InventoryTransaction[] @relation("OrganizationTransactions")
+  issuedTransactions    InventoryTransaction[] @relation("RecipientHospital")
+  donationRecords       DonationRecord[]
+
+  @@map("organizations")
+}
+
+model HospitalProfile {
+  id             String @id @default(uuid())
+  userId         String @unique
+  organizationId String
+  department     String
+  position       String
+  employeeId     String
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("hospital_profiles")
+}
+
+model BloodBankProfile {
+  id               String @id @default(uuid())
+  userId           String @unique
+  organizationId   String
+  officerLicenseNo String
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("blood_bank_profiles")
+}
+
+// ------------------------------------------------------
+// Request & Donor Response Workflow
+// ------------------------------------------------------
+
+model BloodRequest {
+  id             String   @id @default(uuid())
+  requesterId    String
+  hospitalId     String?
+  bloodGroup     String   // A_POSITIVE, A_NEGATIVE, etc.
+  unitsRequired  Int
+  unitsFulfilled Int      @default(0)
+  urgency        String   @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
+  status         String   @default("OPEN") // OPEN, MATCHING, RESPONSES_RECEIVED, IN_PROGRESS, FULFILLED, CANCELLED, EXPIRED
+  hospitalName   String
+  town           String
+  city           String
+  contactName    String
+  contactPhone   String
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  requester User          @relation("RequesterUser", fields: [requesterId], references: [id], onDelete: Cascade)
+  hospital  Organization? @relation("HospitalRequests", fields: [hospitalId], references: [id], onDelete: SetNull)
+
+  responses DonorResponse[]
+
+  @@index([status, bloodGroup, city])
+  @@map("blood_requests")
+}
+
+model DonorResponse {
+  id             String   @id @default(uuid())
+  requestId      String
+  donorId        String
+  responseStatus String   @default("PENDING") // PENDING, ACCEPTED, DECLINED, COMPLETED, CANCELLED
+  notes          String?
+  respondedAt    DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  request BloodRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  donor   User         @relation("DonorUser", fields: [donorId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, donorId])
+  @@map("donor_responses")
+}
+
+// ------------------------------------------------------
+// Blood Bank Inventory & Transactions
+// ------------------------------------------------------
+
+model BloodInventory {
+  id             String   @id @default(uuid())
+  organizationId String
+  bloodGroup     String   // A_POSITIVE, etc.
+  unitsAvailable Int      @default(0)
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, bloodGroup])
+  @@map("blood_inventories")
+}
+
+model InventoryBatch {
+  id             String   @id @default(uuid())
+  organizationId String
+  bloodGroup     String   // A_POSITIVE, etc.
+  units          Int
+  collectionDate DateTime
+  expiryDate     DateTime
+  donorRef       String?
+  batchStatus    String   @default("AVAILABLE") // AVAILABLE, RESERVED, EXPIRED, DISCARDED
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transactions InventoryTransaction[]
+
+  @@index([organizationId, bloodGroup, expiryDate, batchStatus])
+  @@map("inventory_batches")
+}
+
+model InventoryTransaction {
+  id                  String   @id @default(uuid())
+  organizationId      String
+  batchId             String?
+  transactionType     String   // RECEIPT, ISSUE, TRANSFER_IN, TRANSFER_OUT, ADJUSTMENT, EXPIRY_DISCARD
+  bloodGroup          String
+  units               Int
+  reason              String
+  performedByUserId   String
+  recipientHospitalId String?
+  createdAt           DateTime @default(now())
+
+  organization      Organization    @relation("OrganizationTransactions", fields: [organizationId], references: [id], onDelete: Cascade)
+  batch             InventoryBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  performedByUser   User            @relation("PerformedByUser", fields: [performedByUserId], references: [id])
+  recipientHospital Organization?   @relation("RecipientHospital", fields: [recipientHospitalId], references: [id])
+
+  @@map("inventory_transactions")
+}
+
+model DonationRecord {
+  id             String   @id @default(uuid())
+  donorId        String
+  organizationId String
+  unitsDonated   Int      @default(1)
+  donationDate   DateTime @default(now())
+  notes          String?
+  createdAt      DateTime @default(now())
+
+  donor        User         @relation("DonorUserDonations", fields: [donorId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("donation_records")
+}
+
+// ------------------------------------------------------
+// Notifications, Reports & Audit
+// ------------------------------------------------------
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  title       String
+  message     String
+  type        String
+  isRead      Boolean  @default(false)
+  dataPayload String?
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model Report {
+  id          String   @id @default(uuid())
+  reporterId  String
+  targetType  String   // REQUEST, USER, ORGANISATION
+  targetId    String
+  reason      String
+  status      String   @default("PENDING") // PENDING, REVIEWED, RESOLVED, DISMISSED
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  reporter User @relation("ReporterUser", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@map("reports")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  userId       String?
+  action       String
+  targetEntity String
+  entityId     String?
+  ipAddress    String?
+  userAgent    String?
+  details      String?
+  createdAt    DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
